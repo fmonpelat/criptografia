@@ -1,5 +1,5 @@
-use crate::point::{Point, PointProperty};
 use std::{fmt::{Display, Formatter, self}};
+use crate::finite_field_element::FiniteFieldElement;
 
 #[derive(Debug, PartialEq, Clone)]
 
@@ -17,17 +17,16 @@ impl EllipticCurve {
         }
     }
 
-    pub fn calculate_abs(&self, x: PointProperty) -> Point {
-        let y = (x.pow(3.0) + x.mul(self.a) + self.b).abs().sqrt();
-        Point {
-            x: Some(x),
-            y: Some(y),
-            curve: self.clone(),
-        }
-    }
-
     pub fn eq(&self, other: &EllipticCurve) -> bool {
         self.a == other.a && self.b == other.b
+    }
+
+    pub fn check_point(&self, x: FiniteFieldElement, y: FiniteFieldElement) -> bool {
+        let first = x.pow(3).expect("Error in check_point first argument");
+        let second = x.mul(&FiniteFieldElement::new(self.a as i32, x.modulus)).expect("Error in check_point second argument");
+        let third = FiniteFieldElement::new(self.b as i32, x.modulus);
+        let y_squared = first.add(&second).expect("Error in check_point first argument").add(&third);
+        y_squared == y.pow(2)
     }
 }
 
@@ -67,13 +66,11 @@ mod tests {
     }
 
     #[test]
-    fn test_calculate() {
+    fn test_check_point() {
         let curve = EllipticCurve::new(-3.0, -3.0);
-        let x = 2.0;
-        let point = curve.calculate_abs(x);
-        assert_eq!(point.x.unwrap(), x);
-        assert_eq!(point.y.unwrap(), 1.0);
-        assert_eq!(curve.eq(&point.curve), true);
+        let x = FiniteFieldElement::new(379, 1021);
+        let y = FiniteFieldElement::new(1011, 1021);
+        assert_eq!(curve.check_point(x, y), true);
     }
 
 

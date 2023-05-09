@@ -1,33 +1,18 @@
-use crate::{elliptic_curve::EllipticCurve, finite_field_element::FiniteFieldElement, f64_element::F64element};
+use crate::{elliptic_curve::EllipticCurve, finite_field_element::FiniteFieldElement};
 use std::fmt::{Display, Formatter, self};
 
 #[derive(Debug, PartialEq, Clone)]
 
-pub enum PointProperty {
-    OptionF64(F64element),
-    FiniteFieldElement(FiniteFieldElement),
-}
-
-impl PointProperty {
-    pub fn mul(&self, b: &PointProperty) -> Result<f64, &str> {
-        match self {
-            PointProperty::OptionF64(f64_elem) => {
-                Ok(f64_elem.mul(b).unwrap().value)
-            },
-            PointProperty::FiniteFieldElement(ff_elem) => ff_elem.mul(),
-        }
-    }
-}
 
 pub struct Point {
-    pub x: Option<PointProperty>,
-    pub y: Option<PointProperty>,
+    pub x: Option<FiniteFieldElement>,
+    pub y: Option<FiniteFieldElement>,
     pub curve: EllipticCurve,
 }
 
 
 impl Point {
-    pub fn new(x: Option<PointProperty>, y: Option<PointProperty>, curve: EllipticCurve) -> Result<Point, String> {
+    pub fn new(x: Option<FiniteFieldElement>, y: Option<FiniteFieldElement>, curve: EllipticCurve) -> Result<Point, String> {
         // inifinity denoted as x = None, y = None
         if x.is_none() && y.is_none() {
             return Ok(Point {
@@ -37,16 +22,14 @@ impl Point {
             })
         }
         if x.is_none() || y.is_none() {
-            return Err(format!("Point does not exist on curve: {}", curve).to_string())
+            return Err(format!("Point does not exist on: {}", curve).to_string())
         }
-        let x = x.unwrap();
-        let y = y.unwrap();
-        // calculate the point on the curve if y < 0 then multiply by -1 after calculating because calculate only gives the positive y value  
-        let curve_y = curve.calculate_abs(x).y.unwrap();
-        let curve_y = if y < 0.0 { -curve_y } else { curve_y };
+        let x = x.expect("Error in Point::new x argument");
+        let y = y.expect("Error in Point::new y argument");
+        
         // check that the point exists on the curve
-        if curve_y != y {
-            Err(format!("Point does not exist on curve: {} point: {} != {}", curve, curve_y, y).to_string())
+        if !curve.check_point(x.clone(), y.clone()) {
+            Err(format!("Point does not exist on: {}", curve).to_string())
         } else {
             Ok(Point {
                 x: Some(x),
@@ -60,59 +43,99 @@ impl Point {
         self.x == other.x && self.y == other.y && self.curve.eq(&other.curve)
     }
 
-    pub fn sum(&self, other: &Point) -> Result<Point, String> {
+    fn is_infinity(&self) -> bool {
+        self.x.is_none() && self.y.is_none()
+    }
+
+    pub fn add(&self, other: &Point) -> Result<Point, String> {
         // checking that the points are on the same curve
         if !self.curve.eq(&other.curve) {
-            return Err(format!("Points are not on the same curve: {} and {}", self.curve, other.curve).to_string())
+            panic!("Points are not on the same curve")
+        }
+        // checking if one of the points is infinity
+        if  self.is_infinity() {
+            return Ok(other.clone());
+        }
+        if other.is_infinity(){
+            return Ok(self.clone());
+        }
+        // check if the points are inverses
+        if self.x == other.x && self.y != other.y {
+            return Point::new(None, None, self.curve.clone());
+        }
+        // checking if the points are the same
+        if self.eq(other) {
+            let x = self.x.clone().expect("Error in Point::add x argument");
+            let y = self.y.clone().expect("Error in Point::add y argument");
+            let slope_1 = 
+                x.clone().pow(2).expect("Error in Point::add x^2 argument")
+                .mul(&FiniteFieldElement::new(3, x.modulus)).expect("Error in Point::add x^2 argument multiplied by 3")
+                .add(&FiniteFieldElement::new(self.curve.a.clone() as i32, x.modulus)).expect("Error in Point::add x^2 argument when adding a");
+            let slope_2 = y.clone().mul(&FiniteFieldElement::new(2, x.modulus)).expect("Error in Point::add 2y argument");
+            let slope = slope_1.div(&slope_2).expect("Error in Point::add slope argument");
+             
+            let x3 = slope.clone().pow(2).expect("Error in Point::add slope^2 argument")
+                .sub(
+                    &x.clone().mul(&FiniteFieldElement::new(2, x.modulus)).expect("Error in Point::add 2x argument")
+                ).expect("Error in Point::add slope^2 argument when subtracting 2");
+            let y3 = slope.clone().mul(
+                &x.clone().sub(&x3.clone()).expect("Error in Point::add x - x3 argument")
+            ).expect("Error in Point::add slope * (x - x3) argument")
+                .sub(&y.clone()).expect("Error in Point::add slope * (x - x3) - y argument");
+            return Point::new(Some(x3), Some(y3), self.curve.clone());
         }
 
-        // if points are the same then calculate using the tangent line
-        if self.eq(&other) {
-            // check that y is not 0 (tangent is a vertical line)
-            if self.y.unwrap() == 0.0 {
-                return Ok(Point {
-                    x: None,
-                    y: None,
-                    curve: self.curve.clone(),
-                })
-            }
-            // calculate the slope of the tangent line
-            let slope = (3.0 * self.x.unwrap().powf(2.0) + self.curve.a) / (2.0 * self.y.unwrap());
-            // calculate the x and y values of the new point
-            // X3 = slope^2 - 2 * X1
-            let x = slope.powf(2.0) - 2.0 * self.x.unwrap();
-            // Y3 = slope * (X1 - X3) - Y1
-            let y = slope * (self.x.unwrap() - x) - self.y.unwrap();
-            return Ok( Point {
-                x: Some(x),
-                y: Some(y),
-                curve: self.curve.clone()
-            })
-        }
+        // points are different
+        let x1 = self.x.clone().expect("Error in Point::add x1 argument");
+        let y1 = self.y.clone().expect("Error in Point::add y1 argument");
+        let x2 = other.x.clone().expect("Error in Point::add x2 argument");
+        let y2 = other.y.clone().expect("Error in Point::add y2 argument");
 
-        // return the other point if one of the points is infinity A + inf = A
-        if self.x.is_none() && self.y.is_none() {
-            return Ok(other.clone())
-        }
+        // slope of the line between the points 
+        // s = (y2 - y1) / (x2 - x1)
+        let s = y2.clone().sub(
+            &y1.clone()
+        ).expect("Error in Point::add y2 - y1 argument")
+            .div(
+                &x2.clone().sub(&x1.clone()).expect("Error in Point::add x2 - x1 argument")
+            ).expect("Error in Point::add (y2 - y1) / (x2 - x1) argument");
+        // x3 = s^2 - (x1 + x2)
+        let x3 = s.clone().pow(2).expect("Error in Point::add s^2 argument")
+            .sub(
+                &x1.clone().add(&x2.clone()).expect("Error in Point::add x1 + x2 argument")
+            ).expect("Error in Point::add s^2 - (x1 + x2) argument");
+        // y3 = s(x1 - x3) - y1
+        let y3 = s.clone().mul(
+            &x1.clone().sub(&x3.clone()).expect("Error in Point::add x1 - x3 argument")
+        ).expect("Error in Point::add s * (x1 - x3) argument")
+            .sub(&y1.clone()).expect("Error in Point::add s * (x1 - x3) - y1 argument");
+        // returning the new point
+        return Point::new(Some(x3), Some(y3), self.curve.clone());
+    }
 
-        if other.x.is_none() && other.y.is_none() {
-            return Ok(self.clone())
-        }
+    pub fn scalar_mul(&self, scalar: u32) -> Result<Point, String> {
+        // starting the point at infinity
+        let mut product = Point::new(None, None, self.curve.clone())?;
 
-        // check that the points are not inverses otherwise infinity is returned
-        if self.x == other.x && self.y.unwrap() == -(other.y.unwrap()) {
-            return Ok(Point {
-                x: None,
-                y: None,
-                curve: self.curve.clone(),
-            })
+        let mut i = 0;
+        while i < scalar {
+            product = product.add(self)?;
+            i += 1;
         }
+        Ok(product)
+    }
 
-        return Ok(Point {
-            x: None,
-            y: None,
-            curve: self.curve.clone(),
-        })
+    pub fn naive_factor(&self, other: Point) -> Result<Option<u128>, String> {
+        let mut i: u128 = 1;
+        let mut generator = self.clone();
+        while generator != other {
+            generator = generator.add(self).expect("Error in Point::naive_factor generator.add(self) argument");
+            i += 1;
+        }
+        if !generator.eq(&other) {
+            return Ok(None)
+        }
+        Ok(Some(i))
     }
 }
 
@@ -121,7 +144,9 @@ impl Display for Point {
         if self.x == None && self.y == None {
             return write!(f, "Point: Infinity")
         }
-        write!(f, "Point: ({}, {})", self.x.unwrap(), self.y.unwrap())
+        let x = self.x.clone().expect("Error in Point::fmt x argument");
+        let y = self.y.clone().expect("Error in Point::fmt y argument");
+        write!(f, "Point: ({}, {})", x, y)
     }
 }
 
@@ -133,8 +158,8 @@ mod tests {
     #[test]
     fn test_new_point_exists() {
         let curve = EllipticCurve::new(-3.0, -3.0);
-        let x = 2.0;
-        let y = curve.calculate_abs(x).y.unwrap();
+        let x = FiniteFieldElement::new(379, 1021);
+        let y = FiniteFieldElement::new(1011, 1021);
         let point = Point::new(Some(x), Some(y), curve);
         assert_eq!(point.is_ok(), true);
     }
@@ -142,7 +167,10 @@ mod tests {
     #[test]
     fn test_new_point_doesnt_exists() {
         let curve = EllipticCurve::new(-3.0, -3.0);
-        let point2: Result<Point, String> = Point::new(Some(2.0), Some(2.0), curve);
+        let x = FiniteFieldElement::new(1, 17);
+        let y = FiniteFieldElement::new(5, 17);
+        let point2: Result<Point, String> = Point::new(Some(x), Some(y), curve);
+        println!("{:?}", point2);
         assert_eq!(point2.is_err(), true);
     }
 
@@ -159,81 +187,91 @@ mod tests {
     #[test]
     fn test_eq() {
         let curve = EllipticCurve::new(-3.0, -3.0);
-        let point = Point::new(Some(2.0), Some(-1.0), curve.clone()).unwrap();
-        let point2 = Point::new(Some(2.0), Some(-1.0), curve.clone()).unwrap();
+        let x = FiniteFieldElement::new(379, 1021);
+        let y = FiniteFieldElement::new(1011, 1021);
+        let point = Point::new(Some(x.clone()), Some(y.clone()), curve.clone()).unwrap();
+        let point2 = Point::new(Some(x), Some(y), curve.clone()).unwrap();
         assert_eq!(point.eq(&point2), true);
     }
 
     #[test]
-    fn test_sum_not_same_curve() {
+    fn test_add_same_point() {
         let curve = EllipticCurve::new(-3.0, -3.0);
-        let curve2 = EllipticCurve::new(-4.0, -4.0);
-        let x = 2.0;
-        let y_curve1 =  curve.calculate_abs(x).y.unwrap();
-        let y_curve2 = curve2.calculate_abs(x).y.unwrap();
-        let point = Point::new(Some(x), Some(y_curve1), curve.clone()).unwrap();
-        let point2 = Point::new(Some(x), Some(y_curve2), curve2.clone()).unwrap();
-        let sum = point.sum(&point2);
-        assert_eq!(sum.is_err(), true);
-    }
-
-    #[test]
-    fn test_sum_same_points() {
-        let curve = EllipticCurve::new(-3.0, -3.0);
-        let x = 2.0;
-        let y = curve.calculate_abs(x).y.unwrap();
-        let point = Point::new(Some(x), Some(y), curve.clone()).unwrap();
+        let x = FiniteFieldElement::new(379, 1021);
+        let y = FiniteFieldElement::new(1011, 1021);
+        let point = Point::new(Some(x.clone()), Some(y.clone()), curve.clone()).unwrap();
         let point2 = Point::new(Some(x), Some(y), curve.clone()).unwrap();
-        let sum = point.sum(&point2);
-        assert_eq!(sum.is_ok(), true);
-        let x_3 = 16.25;
-        let y_3 = -65.125;
-        assert_eq!(sum.clone().unwrap().x, Some(x_3));
-        assert_eq!(sum.unwrap().y, Some(y_3));
+        let point3 = point.add(&point2).unwrap();
+        assert_eq!(point3.x, Some(FiniteFieldElement::new(57, 1021)));
+        assert_eq!(point3.y, Some(FiniteFieldElement::new(914, 1021)));
     }
 
     #[test]
-    fn test_sum_tangent_vertical() {
+    fn test_add_different_points() {
         let curve = EllipticCurve::new(-3.0, -3.0);
-        println!("{:?}", curve);
-        let x = 2.1038034027355365331649473328289281;
-        let y = curve.calculate_abs(x).y.unwrap();
-        assert_eq!(y, 0.0);
-        let point = Point::new(Some(x), Some(y), curve.clone()).unwrap();
-        let point2 = Point::new(Some(x), Some(y), curve.clone()).unwrap();
-        let sum = point.sum(&point2);
-        assert_eq!(sum.is_ok(), true);
-        assert_eq!(sum.clone().unwrap(), Point::new(None, None, curve.clone()).unwrap());
+        let x = FiniteFieldElement::new(379, 1021);
+        let y = FiniteFieldElement::new(1011, 1021);
+        let point = Point::new(Some(x.clone()), Some(y.clone()), curve.clone()).unwrap();
+        let x2 = FiniteFieldElement::new(57, 1021);
+        let y2 = FiniteFieldElement::new(914, 1021);
+        let point2 = Point::new(Some(x2), Some(y2), curve.clone()).unwrap();
+        let point3 = point.add(&point2).unwrap();
+        assert_eq!(point3.x, Some(FiniteFieldElement::new(103, 1021)));
+        assert_eq!(point3.y, Some(FiniteFieldElement::new(239, 1021)));
     }
 
     #[test]
-    fn test_sum_with_inf() {
+    fn test_scalar_mul() {
         let curve = EllipticCurve::new(-3.0, -3.0);
-        let x = 2.0;
-        let y = curve.calculate_abs(x).y.unwrap();
-        let point = Point::new(Some(x), Some(y), curve.clone()).unwrap();
-        let point2 = Point::new(None, None, curve.clone()).unwrap(); // here point is Inf
+        let x = FiniteFieldElement::new(379, 1021);
+        let y = FiniteFieldElement::new(1011, 1021);
+        let point = Point::new(Some(x.clone()), Some(y.clone()), curve.clone()).unwrap();
 
-        let sum = point.sum(&point2);
-        assert_eq!(sum.is_ok(), true);
-        assert_eq!(sum.clone().unwrap().x, Some(x));
-        assert_eq!(sum.unwrap().y, Some(y));
+        // scalar mult by 2
+        let point2 = point.scalar_mul(2).unwrap();
+        assert_eq!(point2.x, Some(FiniteFieldElement::new(57, 1021)));
+        assert_eq!(point2.y, Some(FiniteFieldElement::new(914, 1021)));
 
-        let sum2 = point2.sum(&point);
-        assert_eq!(sum2.is_ok(), true);
-        assert_eq!(sum2.clone().unwrap(), Point::new(Some(x), Some(y), curve.clone()).unwrap()); 
+        // scalar mult by 3
+        let point3 = point.scalar_mul(3).unwrap();
+        assert_eq!(point3.x, Some(FiniteFieldElement::new(103, 1021)));
+        assert_eq!(point3.y, Some(FiniteFieldElement::new(239, 1021)));
+
+        // starting at inf returns inf
+        let point = Point::new(None, None, curve.clone()).unwrap();
+        let point3 = point.scalar_mul(2).unwrap();
+        assert_eq!(point3.eq(&point), true);
     }
 
     #[test]
-    fn test_sum_inverses() {
+    fn test_is_on_curve() {
         let curve = EllipticCurve::new(-3.0, -3.0);
-        let x = 2.0;
-        let y = curve.calculate_abs(x).y.unwrap();
-        let point = Point::new(Some(x), Some(y), curve.clone()).unwrap();
-        let point2 = Point::new(Some(x), Some(-y), curve.clone()).unwrap();
+        let x = FiniteFieldElement::new(379, 1021);
+        let y = FiniteFieldElement::new(1011, 1021);
+        let point = Point::new(Some(x.clone()), Some(y.clone()), curve.clone());
+        assert_eq!(point.is_ok(), true);
 
-        let sum = point.sum(&point2);
-        assert_eq!(sum.is_ok(), true);
-        assert_eq!(sum.clone().unwrap(), Point::new(None, None, curve.clone()).unwrap());
+        let x2 = FiniteFieldElement::new(56, 1021);
+        let y2 = FiniteFieldElement::new(914, 1021);
+        let point2 = Point::new(Some(x2), Some(y2), curve.clone());
+        assert_eq!(point2.is_err(), true);
     }
+
+    #[test]
+    fn test_naive_factor() {
+        let curve = EllipticCurve::new(905.0, 100.0);
+        let generator = Point::new(
+            Some(FiniteFieldElement::new(1006, 1021)),
+            Some(FiniteFieldElement::new(416, 1021)),
+             curve.clone()
+        ).expect("Error creating generator point doesnt belong to curve");
+        let target = Point::new(
+            Some(FiniteFieldElement::new(612, 1021)), 
+            Some(FiniteFieldElement::new(827, 1021)),
+            curve.clone()
+        ).expect("Error creating target point doesnt belong to curve");
+        let res = generator.naive_factor(target).expect("Error factoring point");
+        println!("res: {:?}", res);
+    }
+
 }

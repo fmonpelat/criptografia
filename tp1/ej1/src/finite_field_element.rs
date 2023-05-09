@@ -2,8 +2,8 @@ use std::fmt::{Display, Formatter, self};
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct FiniteFieldElement {
-    value: i32,
-    modulus: i32,
+    pub value: i32,
+    pub modulus: i32,
 }
 
 impl FiniteFieldElement {
@@ -58,7 +58,6 @@ impl FiniteFieldElement {
         self.check_modulus(b)?;
         self.check_zero(b)?;
         let (gcd, x, _) = ExtendedEuclideanAlgorithm::extended_gcd(b.value, self.modulus);
-        println!("gcd: {}, x: {}", gcd, x);
         if gcd != 1 {
             return Err(format!("{} and {} are not coprimes", self.value, self.modulus));
         }
@@ -164,6 +163,12 @@ mod tests {
         let b = FiniteFieldElement::new(0, 7);
 
         assert_eq!(a.div(&b).unwrap_err(), "Zero division");
+    }
+
+    #[test]
+    fn test_pow() {
+        let a = FiniteFieldElement::new(5, 7);
+        assert_eq!(a.pow(3).unwrap(), FiniteFieldElement::new(6, 7));
     }
 
     #[test]
